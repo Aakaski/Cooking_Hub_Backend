@@ -1,4 +1,3 @@
-
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -7,32 +6,52 @@ using dotnetapp.Data;
 using dotnetapp.Services;
 using Microsoft.OpenApi.Models;
 using DotNetEnv;
-using System;
 using log4net.Config;
 using System.IO;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Load .env (local only – harmless on Render)
 Env.Load();
+
+// Logging
 XmlConfigurator.Configure(new FileInfo("log4net.config"));
+
+// Allow environment variables (Render)
 builder.Configuration.AddEnvironmentVariables();
 
-// Add services to the container.
+// -------------------- SERVICES --------------------
 
+// Controllers
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
-        options.JsonSerializerOptions.PropertyNamingPolicy = null; // This preserves PascalCase
+        options.JsonSerializerOptions.PropertyNamingPolicy = null;
     });
 
+// In-memory DB
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseInMemoryDatabase("CookingHubDb"));
 
-// Register Services
+// DI Services
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<CookingClassRequestService>();
 builder.Services.AddScoped<CookingClassService>();
 builder.Services.AddScoped<FeedbackService>();
+
+// -------------------- JWT CONFIG (FIXED) --------------------
+
+// ✅ READ JWT FROM CONFIG (works with Render env vars)
+var jwtKey = builder.Configuration["Jwt:Key"];
+var jwtIssuer = builder.Configuration["Jwt:Issuer"];
+var jwtAudience = builder.Configuration["Jwt:Audience"];
+
+// ❗ Safety check (optional but recommended)
+if (string.IsNullOrEmpty(jwtKey))
+{
+    throw new Exception("JWT Key is missing. Check Render environment variables.");
+}
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -42,14 +61,15 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
-            ValidIssuer = Environment.GetEnvironmentVariable("Jwt_Issuer"),
-            ValidAudience = Environment.GetEnvironmentVariable("Jwt_Audience"),
+            ValidIssuer = jwtIssuer,
+            ValidAudience = jwtAudience,
             IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(Environment.GetEnvironmentVariable("Jwt_Key")))
+                Encoding.UTF8.GetBytes(jwtKey))
         };
     });
 
-// Configure CORS
+// -------------------- CORS --------------------
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll",
@@ -61,7 +81,8 @@ builder.Services.AddCors(options =>
         });
 });
 
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+// -------------------- SWAGGER --------------------
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -71,7 +92,7 @@ builder.Services.AddSwaggerGen(options =>
         Version = "v1",
         Description = "API for managing Cooking App with JWT authentication"
     });
-    // Define the Bearer security scheme
+
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Name = "Authorization",
@@ -79,9 +100,9 @@ builder.Services.AddSwaggerGen(options =>
         Scheme = "Bearer",
         BearerFormat = "JWT",
         In = ParameterLocation.Header,
-        Description = "Enter 'Bearer' [space] and then your valid token.\n\nExample: \"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\""
+        Description = "Enter 'Bearer {token}'"
     });
-    // Add the security requirement globally
+
     options.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
         {
@@ -98,22 +119,20 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
-
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+// -------------------- PIPELINE --------------------
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
-
+// ❌ Disable HTTPS redirect on Render (important)
 app.UseCors("AllowAll");
 
 app.UseAuthentication();
-
 app.UseAuthorization();
 
 app.MapControllers();
